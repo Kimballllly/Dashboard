@@ -12,13 +12,13 @@ bcrypt = Bcrypt(app)
 app.secret_key = 'your_secret_key_here'
 app.permanent_session_lifetime = timedelta(days=7)
 
-# Database connection
-connection = mysql.connector.connect(
-    host="paperazzi.cre40o0wmfru.ap-southeast-2.rds.amazonaws.com",
-    user="admin",
-    password="paperazzi",
-    database="paperazzi"
-)
+# Database configuration
+db_config = {
+    'host': os.getenv('DB_HOST', 'localhost'),
+    'user': os.getenv('DB_USER', 'root'),
+    'password': os.getenv('DB_PASSWORD', 'password'),
+    'database': os.getenv('DB_NAME', 'paperazzi')
+}
 
 # Signup Page
 @app.route('/signup', methods=['GET', 'POST'])
