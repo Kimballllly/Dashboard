@@ -13,13 +13,19 @@ bcrypt = Bcrypt(app)
 app.secret_key = 'your_secret_key_here'
 app.permanent_session_lifetime = timedelta(days=7)
 
-# Database configuration
-db_config = {
-    'host': os.getenv('DB_HOST', 'localhost'),
-    'user': os.getenv('DB_USER', 'root'),
-    'password': os.getenv('DB_PASSWORD', 'password'),
-    'database': os.getenv('DB_NAME', 'paperazzi')
-}
+# Database configuration using environment variables
+DB_HOST = os.getenv('DB_HOST', 'localhost')
+DB_USER = os.getenv('DB_USER', 'root')
+DB_PASSWORD = os.getenv('DB_PASSWORD', 'password')
+DB_NAME = os.getenv('DB_NAME', 'database_name')
+
+# Establish the connection globally (so it can be used in different routes)
+connection = mysql.connector.connect(
+    host=DB_HOST,
+    user=DB_USER,
+    password=DB_PASSWORD,
+    database=DB_NAME
+)
 
 # Signup Page
 @app.route('/signup', methods=['GET', 'POST'])
