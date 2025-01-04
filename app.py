@@ -3,6 +3,7 @@ from flask_bcrypt import Bcrypt
 from math import ceil
 from datetime import timedelta, datetime
 import mysql.connector
+import os
 
 # Initialize Flask app and Bcrypt for password hashing
 app = Flask(__name__)
