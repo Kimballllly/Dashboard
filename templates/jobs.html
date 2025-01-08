@@ -43,8 +43,8 @@
                 <p>{{ completed_jobs }}</p>
             </div>
             <div class="metric-card">
-                <h3>Pending Jobs</h3>
-                <p>{{ pending_jobs }}</p>
+                <h3>Cancelled Jobs</h3>
+                <p>{{ cancelled_jobs }}</p>
             </div>
             <div class="metric-card">
                 <h3>Color Revenue</h3>
@@ -65,6 +65,16 @@
             </div>
         </div>
 
+        <h2>Sales Report</h2>
+        <form method="get" action="{{ url_for('generate_report') }}" target="_blank">
+            <label for="start_date">Start Date:</label>
+            <input type="date" id="start_date" name="start_date" required>
+            <label for="end_date">End Date:</label>
+            <input type="date" id="end_date" name="end_date" required>
+            <button type="submit">Generate Sales Report</button>
+        </form>
+
+        
         <table>
             <thead>
                 <tr>
@@ -112,6 +122,9 @@
         
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels"></script>
+
     <script>
         // Data for job trends chart
         const jobTrendDates = {{ job_trend_dates|tojson }};
@@ -135,7 +148,10 @@
             }
         });
 
-        // Data for revenue breakdown chart
+            // Data for revenue breakdown chart
+        const colorPercentage = {{ color_percentage }};
+        const bwPercentage = {{ bw_percentage }};
+
         const revenueData = {
             labels: ['Color Revenue', 'Black & White Revenue'],
             datasets: [{
@@ -145,13 +161,42 @@
             }]
         };
 
+        // Initialize the chart
         const revenueBreakdownChart = new Chart(document.getElementById('revenueBreakdownChart'), {
             type: 'pie',
             data: revenueData,
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
-            }
+                plugins: {
+                    datalabels: {
+                        formatter: (value, context) => {
+                            const total = context.dataset.data.reduce((acc, val) => acc + val, 0);
+                            const percentage = (value / total * 100).toFixed(2);
+                            return `${percentage}%`;
+                        },
+                        color: '#fff', // Text color
+                        font: {
+                            weight: 'bold',
+                            size: 14
+                        },
+                        align: 'center' // Aligns label at the center of the slice
+                    },
+                    legend: {
+                        position: 'top',
+                    },
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                const rawValue = context.raw; // Revenue amount
+                                const percentage = (rawValue / context.dataset.data.reduce((a, b) => a + b) * 100).toFixed(2);
+                                return `${context.label}: $${rawValue.toFixed(2)} (${percentage}%)`;
+                            }
+                        }
+                    }
+                }
+            },
+            plugins: [ChartDataLabels] // Activate the Data Labels plugin
         });
     </script>
 </body>
