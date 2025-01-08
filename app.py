@@ -4,28 +4,153 @@ from math import ceil
 from datetime import timedelta, datetime
 import mysql.connector
 import os
+from flask import make_response
+
+from reportlab.lib.pagesizes import letter
+from reportlab.lib import colors
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Image, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet
+from io import BytesIO
+from flask import send_file
+from reportlab.lib.colors import HexColor
+
 
 # Initialize Flask app and Bcrypt for password hashing
 app = Flask(__name__)
 bcrypt = Bcrypt(app)
 
+
 # Secret key for session management
 app.secret_key = 'your_secret_key_here'
 app.permanent_session_lifetime = timedelta(days=7)
 
-# Database configuration using environment variables
-DB_HOST = os.getenv('DB_HOST', 'localhost')
-DB_USER = os.getenv('DB_USER', 'root')
-DB_PASSWORD = os.getenv('DB_PASSWORD', 'password')
-DB_NAME = os.getenv('DB_NAME', 'database_name')
-
-# Establish the connection globally (so it can be used in different routes)
 connection = mysql.connector.connect(
-    host=DB_HOST,
-    user=DB_USER,
-    password=DB_PASSWORD,
-    database=DB_NAME
-)
+            host="paperazzi.cre40o0wmfru.ap-southeast-2.rds.amazonaws.com",
+            user="admin",
+            password="paperazzi",
+            database="paperazzi"
+        )
+
+
+
+
+@app.route('/generate_report', methods=['GET'])
+def generate_report():
+    start_date = request.args.get('start_date')
+    end_date = request.args.get('end_date')
+
+    cursor = connection.cursor(dictionary=True)
+    query = """
+        SELECT pjd.file_name, pjd.color_mode, pjd.total_price, pj.created_at
+        FROM print_jobs pj
+        JOIN print_job_details pjd ON pj.job_id = pjd.job_id
+        WHERE DATE(pj.created_at) BETWEEN %s AND %s AND pjd.status = 'complete'
+        ORDER BY pj.created_at
+    """
+    cursor.execute(query, (start_date, end_date))
+    report_data = cursor.fetchall()
+
+    # Fetch summary metrics
+    cursor.execute("""
+        SELECT 
+            COUNT(*) as total_jobs, 
+            SUM(pjd.total_price) as total_revenue,
+            SUM(CASE WHEN pjd.color_mode = 'colored' THEN pjd.total_price ELSE 0 END) as color_revenue,
+            SUM(CASE WHEN pjd.color_mode = 'bw' THEN pjd.total_price ELSE 0 END) as bw_revenue
+        FROM print_jobs pj
+        JOIN print_job_details pjd ON pj.job_id = pjd.job_id
+        WHERE DATE(pj.created_at) BETWEEN %s AND %s AND pjd.status = 'complete'
+    """, (start_date, end_date))
+    summary = cursor.fetchone()
+    cursor.close()
+
+    #pdf
+    pdf_buffer = BytesIO()
+    doc = SimpleDocTemplate(
+        pdf_buffer,
+        pagesize=letter,
+        topMargin=20,  # Reduce top margin
+        leftMargin=20,
+        rightMargin=20,
+        bottomMargin=20
+    )
+    elements = []
+
+    styles = getSampleStyleSheet()
+    normal_style = styles['Normal']
+
+    # Header Section with Logo and Title
+    logo_path = os.path.join(app.static_folder, "logo.jpg")
+    header_table_data = []
+    if os.path.exists(logo_path):
+        logo = Image(logo_path, width=80, height=80)
+        header_table_data.append([
+            logo,
+            Paragraph(
+                "<strong>Paperazzi: Coin Operated Printing Machine Sales Report</strong><br/>Cavite State University - Imus Campus",
+                normal_style
+            )
+        ])
+
+    header_table = Table(header_table_data, colWidths=[100, 400])
+    header_table.setStyle(TableStyle([
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('ALIGN', (1, 0), (-1, -1), 'LEFT'),
+    ]))
+    elements.append(header_table)
+    elements.append(Spacer(1, 10))  # Reduce spacer size here
+
+
+    # Summary Section
+    summary_data = [
+        ["Summary", ""],
+        ["Total Completed Jobs", summary["total_jobs"]],
+        ["Total Revenue (PHP)", f"{summary['total_revenue']:.2f}"],
+        ["Color Revenue (PHP)", f"{summary['color_revenue']:.2f}"],
+        ["Black & White Revenue (PHP)", f"{summary['bw_revenue']:.2f}"],
+    ]
+    summary_table = Table(summary_data, colWidths=[200, 200])
+    summary_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), HexColor('#ff294f')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+        ('FONTSIZE', (0, 0), (-1, -1), 12),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 10),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
+    ]))
+    elements.append(summary_table)
+    elements.append(Spacer(1, 20))
+
+    # Detailed Table
+    table_data = [["Date", "File Name", "Color Mode", "Total Price (PHP)"]]
+    for row in report_data:
+        table_data.append([
+            row["created_at"].strftime("%Y-%m-%d"),
+            row["file_name"],
+            row["color_mode"].capitalize(),
+            f"{row['total_price']:.2f}"
+        ])
+
+    detail_table = Table(table_data, colWidths=[100, 250, 100, 100])
+    detail_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), HexColor('#ff294f')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+        ('FONTSIZE', (0, 0), (-1, -1), 10),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 10),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
+    ]))
+    elements.append(detail_table)
+
+    # Build PDF
+    doc.build(elements)
+    pdf_buffer.seek(0)
+    return send_file(pdf_buffer, as_attachment=True, download_name=f"Sales_Report_{start_date}_to_{end_date}.pdf")
+
 
 # Signup Page
 @app.route('/signup', methods=['GET', 'POST'])
@@ -227,7 +352,7 @@ def jobs():
         # Fetch total jobs (regardless of status)
         cursor.execute(f"""
             SELECT COUNT(*) as total_jobs 
-            FROM print_jobs pj
+            FROM print_job_details pjd
             {filter_clause}
         """, filter_params)
         total_jobs = cursor.fetchone()['total_jobs']
@@ -244,14 +369,17 @@ def jobs():
         # Fetch completed and pending jobs
         cursor.execute(f"""
             SELECT 
-                SUM(CASE WHEN pj.status = 'Complete' THEN 1 ELSE 0 END) as completed_jobs,
-                SUM(CASE WHEN pj.status != 'Complete' THEN 1 ELSE 0 END) as pending_jobs
+                SUM(CASE WHEN pjd.status = 'complete' THEN 1 ELSE 0 END) as completed_jobs,
+                SUM(CASE WHEN pjd.status = 'cancelled' THEN 1 ELSE 0 END) as cancelled_jobs
             FROM print_jobs pj
+            JOIN print_job_details pjd ON pj.job_id = pjd.job_id
             {filter_clause}
         """, filter_params)
+
         job_status_counts = cursor.fetchone()
         completed_jobs = job_status_counts['completed_jobs']
-        pending_jobs = job_status_counts['pending_jobs']
+        cancelled_jobs = job_status_counts['cancelled_jobs']
+
 
         # Fetch revenue breakdown (Color vs. Black & White)
         cursor.execute(f"""
@@ -266,6 +394,12 @@ def jobs():
         color_revenue = revenue_breakdown['color_revenue'] or 0.0
         bw_revenue = revenue_breakdown['bw_revenue'] or 0.0
 
+        # Calculate percentages
+        total_revenue = color_revenue + bw_revenue
+        color_percentage = (color_revenue / total_revenue * 100) if total_revenue > 0 else 0
+        bw_percentage = (bw_revenue / total_revenue * 100) if total_revenue > 0 else 0
+                
+        
         # Fetch jobs for the table with pagination
         rows_per_page = 10
         page = int(request.args.get('page', 1))
@@ -280,8 +414,9 @@ def jobs():
         total_pages = ceil(total_records / rows_per_page)
 
         query_with_pagination = f"""
-            SELECT pjd.id,pj.job_id,pjd.file_name, pj.status, pj.created_at, pjd.pages_to_print, 
-                   pjd.color_mode, pjd.total_price, pjd.inserted_amount,pjd.total_pages
+            SELECT pjd.id, pj.job_id, pjd.file_name, pjd.status, pj.created_at, 
+                   pjd.pages_to_print, pjd.color_mode, pjd.total_price, 
+                   pjd.inserted_amount, pjd.total_pages
             FROM print_jobs pj
             JOIN print_job_details pjd ON pj.job_id = pjd.job_id
             {filter_clause}
@@ -313,24 +448,28 @@ def jobs():
             start_page = max(1, end_page - pagination_range + 1)
 
         return render_template(
-            'jobs.html',
-            total_jobs=total_jobs,
-            total_sales=total_sales,
-            completed_jobs=completed_jobs,
-            pending_jobs=pending_jobs,
-            color_revenue=color_revenue,
-            bw_revenue=bw_revenue,
-            print_jobs=print_jobs,
-            page=page,
-            total_pages=total_pages,
-            start_page=start_page,
-            end_page=end_page,
-            selected_month=selected_month,
-            job_trend_dates=job_trend_dates,
-            job_trend_counts=job_trend_counts
-        )
+        'jobs.html',
+        total_jobs=total_jobs,
+        total_sales=total_sales,
+        completed_jobs=completed_jobs,
+        cancelled_jobs=cancelled_jobs,
+        color_revenue=color_revenue,
+        bw_revenue=bw_revenue,
+        color_percentage=color_percentage,
+        bw_percentage=bw_percentage,
+        print_jobs=print_jobs,
+        page=page,
+        total_pages=total_pages,
+        start_page=start_page,
+        end_page=end_page,
+        selected_month=selected_month,
+        job_trend_dates=job_trend_dates,
+        job_trend_counts=job_trend_counts
+    )
+
     except mysql.connector.Error as err:
         return f"Error: {err}"
+
 
 
 
@@ -348,13 +487,14 @@ def update_remaining_paper():
         """, (new_remaining_paper,))
         connection.commit()
 
-        # Fetch the last updated_at value
         cursor.execute("""
             SELECT updated_at 
             FROM printer_status 
+            WHERE refill = TRUE 
             ORDER BY updated_at DESC 
             LIMIT 1
         """)
+
         last_refilled_row = cursor.fetchone()
         if last_refilled_row:
             last_refilled = last_refilled_row['updated_at'].strftime('%B %d, %Y')
@@ -377,4 +517,4 @@ def require_login():
 
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=True, host='127.0.0.1', port=5000)
