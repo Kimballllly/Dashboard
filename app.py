@@ -25,7 +25,7 @@ app.secret_key = 'your_secret_key_here'
 app.permanent_session_lifetime = timedelta(days=7)
 
 connection = mysql.connector.connect(
-            host="paperazzi.cre40o0wmfru.ap-southeast-2.rds.amazonaws.com",
+            host="mydatabase.cziagw6u0a1u.ap-southeast-2.rds.amazonaws.com",
             user="admin",
             password="paperazzi",
             database="paperazzi"
