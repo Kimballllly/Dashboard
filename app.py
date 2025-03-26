@@ -1,520 +1,162 @@
-from flask import Flask, render_template, request, redirect, url_for, session, flash
-from flask_bcrypt import Bcrypt
-from math import ceil
-from datetime import timedelta, datetime
-import mysql.connector
+from flask import Flask, render_template, request, redirect, url_for
+from flask_socketio import SocketIO, emit
 import os
-from flask import make_response
+import mysql.connector
+import fitz  # PyMuPDF for PDF processing
+from docx import Document  # For handling Word documents
+import subprocess
+import qrcode
 
-from reportlab.lib.pagesizes import letter
-from reportlab.lib import colors
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Image, Paragraph, Spacer
-from reportlab.lib.styles import getSampleStyleSheet
-from io import BytesIO
-from flask import send_file
-from reportlab.lib.colors import HexColor
-
-
-# Initialize Flask app and Bcrypt for password hashing
+# Flask application setup
 app = Flask(__name__)
-bcrypt = Bcrypt(app)
+socketio = SocketIO(app)
 
+# Database configuration
+db_config = {
+    'host': os.getenv('DB_HOST', 'localhost'),
+    'user': os.getenv('DB_USER', 'root'),
+    'password': os.getenv('DB_PASSWORD', 'password'),
+    'database': os.getenv('DB_NAME', 'paperazzi')
+}
 
-# Secret key for session management
-app.secret_key = 'your_secret_key_here'
-app.permanent_session_lifetime = timedelta(days=7)
+# Allowed file extensions
+ALLOWED_EXTENSIONS = {'doc', 'docx', 'pdf'}
 
-connection = mysql.connector.connect(
-            host="mydatabase.cziagw6u0a1u.ap-southeast-2.rds.amazonaws.com",
-            user="admin",
-            password="paperazzi",
-            database="paperazzi"
-        )
+# Function to check allowed file extensions
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
+# Function to calculate total pages for PDF and Word documents
+def get_total_pages(file_path):
+    try:
+        if file_path.lower().endswith('.pdf'):  # For PDFs
+            with fitz.open(file_path) as pdf:
+                return pdf.page_count
+        elif file_path.lower().endswith(('.doc', '.docx')):  # For Word documents
+            doc = Document(file_path)
+            total_characters = sum(len(p.text) for p in doc.paragraphs)
+            average_chars_per_page = 1500
+            return max(1, total_characters // average_chars_per_page)
+        return "N/A"
+    except Exception as e:
+        print(f"Error processing file: {e}")
+        return None
 
+# Function to get a connection to the database
+def get_db_connection():
+    if not hasattr(app, 'db_connection') or not app.db_connection.is_connected():
+        app.db_connection = mysql.connector.connect(**db_config)
+        app.db_cursor = app.db_connection.cursor(dictionary=True)
+    return app.db_connection, app.db_cursor
 
+# Ensure 'uploads' directory exists
+if not os.path.exists('uploads'):
+    os.makedirs('uploads')
 
-@app.route('/generate_report', methods=['GET'])
-def generate_report():
-    start_date = request.args.get('start_date')
-    end_date = request.args.get('end_date')
-
-    cursor = connection.cursor(dictionary=True)
-    query = """
-        SELECT pjd.file_name, pjd.color_mode, pjd.total_price, pj.created_at
-        FROM print_jobs pj
-        JOIN print_job_details pjd ON pj.job_id = pjd.job_id
-        WHERE DATE(pj.created_at) BETWEEN %s AND %s AND pjd.status = 'complete'
-        ORDER BY pj.created_at
-    """
-    cursor.execute(query, (start_date, end_date))
-    report_data = cursor.fetchall()
-
-    # Fetch summary metrics
-    cursor.execute("""
-        SELECT 
-            COUNT(*) as total_jobs, 
-            SUM(pjd.total_price) as total_revenue,
-            SUM(CASE WHEN pjd.color_mode = 'colored' THEN pjd.total_price ELSE 0 END) as color_revenue,
-            SUM(CASE WHEN pjd.color_mode = 'bw' THEN pjd.total_price ELSE 0 END) as bw_revenue
-        FROM print_jobs pj
-        JOIN print_job_details pjd ON pj.job_id = pjd.job_id
-        WHERE DATE(pj.created_at) BETWEEN %s AND %s AND pjd.status = 'complete'
-    """, (start_date, end_date))
-    summary = cursor.fetchone()
-    cursor.close()
-
-    #pdf
-    pdf_buffer = BytesIO()
-    doc = SimpleDocTemplate(
-        pdf_buffer,
-        pagesize=letter,
-        topMargin=20,  # Reduce top margin
-        leftMargin=20,
-        rightMargin=20,
-        bottomMargin=20
-    )
-    elements = []
-
-    styles = getSampleStyleSheet()
-    normal_style = styles['Normal']
-
-    # Header Section with Logo and Title
-    logo_path = os.path.join(app.static_folder, "logo.jpg")
-    header_table_data = []
-    if os.path.exists(logo_path):
-        logo = Image(logo_path, width=80, height=80)
-        header_table_data.append([
-            logo,
-            Paragraph(
-                "<strong>Paperazzi: Coin Operated Printing Machine Sales Report</strong><br/>Cavite State University - Imus Campus",
-                normal_style
-            )
-        ])
-
-    header_table = Table(header_table_data, colWidths=[100, 400])
-    header_table.setStyle(TableStyle([
-        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-        ('ALIGN', (1, 0), (-1, -1), 'LEFT'),
-    ]))
-    elements.append(header_table)
-    elements.append(Spacer(1, 10))  # Reduce spacer size here
-
-
-    # Summary Section
-    summary_data = [
-        ["Summary", ""],
-        ["Total Completed Jobs", summary["total_jobs"]],
-        ["Total Revenue (PHP)", f"{summary['total_revenue']:.2f}"],
-        ["Color Revenue (PHP)", f"{summary['color_revenue']:.2f}"],
-        ["Black & White Revenue (PHP)", f"{summary['bw_revenue']:.2f}"],
-    ]
-    summary_table = Table(summary_data, colWidths=[200, 200])
-    summary_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), HexColor('#ff294f')),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
-        ('FONTSIZE', (0, 0), (-1, -1), 12),
-        ('BOTTOMPADDING', (0, 0), (-1, 0), 10),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
-    ]))
-    elements.append(summary_table)
-    elements.append(Spacer(1, 20))
-
-    # Detailed Table
-    table_data = [["Date", "File Name", "Color Mode", "Total Price (PHP)"]]
-    for row in report_data:
-        table_data.append([
-            row["created_at"].strftime("%Y-%m-%d"),
-            row["file_name"],
-            row["color_mode"].capitalize(),
-            f"{row['total_price']:.2f}"
-        ])
-
-    detail_table = Table(table_data, colWidths=[100, 250, 100, 100])
-    detail_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), HexColor('#ff294f')),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
-        ('FONTSIZE', (0, 0), (-1, -1), 10),
-        ('BOTTOMPADDING', (0, 0), (-1, 0), 10),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
-    ]))
-    elements.append(detail_table)
-
-    # Build PDF
-    doc.build(elements)
-    pdf_buffer.seek(0)
-    return send_file(pdf_buffer, as_attachment=True, download_name=f"Sales_Report_{start_date}_to_{end_date}.pdf")
-
-
-# Signup Page
-@app.route('/signup', methods=['GET', 'POST'])
-def signup():
-    if request.method == 'POST':
-        username = request.form['username']
-        email = request.form['email']
-        password = request.form['password']
-        hashed_password = bcrypt.generate_password_hash(password).decode('utf-8')
-
-        cursor = connection.cursor()
-        try:
-            cursor.execute("""
-                INSERT INTO admins (username, email, password_hash) 
-                VALUES (%s, %s, %s)
-            """, (username, email, hashed_password))
-            connection.commit()
-            flash('Account created successfully. Please log in.', 'success')
-            return redirect(url_for('login'))
-        except mysql.connector.Error as err:
-            flash(f'Error: {err}', 'danger')
-        finally:
-            cursor.close()
-
-    return render_template('signup.html')
-
-
-# Login Page
-@app.route('/login', methods=['GET', 'POST'])
-def login():
-    if 'admin_id' in session:
-        return redirect(url_for('dashboard'))
-
-    if request.method == 'POST':
-        email = request.form['email']
-        password = request.form['password']
-
-        cursor = connection.cursor(dictionary=True)
-        cursor.execute("SELECT * FROM admins WHERE email = %s", (email,))
-        admin = cursor.fetchone()
-        cursor.close()
-
-        if admin and bcrypt.check_password_hash(admin['password_hash'], password):
-            session.permanent = True
-            session['admin_id'] = admin['admin_id']
-            session['username'] = admin['username']
-            flash(f'Welcome back, {admin["username"]}!', 'success')
-            return redirect(url_for('dashboard'))
-        else:
-            flash('Invalid email or password. Please try again.', 'danger')
-
-    return render_template('login.html')
-
-
-# Logout
-@app.route('/logout')
-def logout():
-    session.pop('admin_id', None)
-    session.pop('username', None)
-    flash('You have been logged out.', 'success')
-    return redirect(url_for('login'))
-
+# 🏠 **Route: Home Page**
 @app.route('/')
-def dashboard():
-    if 'admin_id' not in session:
-        flash('Please log in to access the dashboard.', 'warning')
-        return redirect(url_for('login'))
+def index():
+    return render_template('index.html')
 
-    admin_username = session.get('username')
-    todays_page = int(request.args.get('todays_page', 1))  # Default to page 1
-    jobs_per_page = 10
+# 📁 **Route: File Upload**
+@app.route('/upload', methods=['POST'])
+def upload_file():
+    if 'file' not in request.files:
+        return redirect(request.url)
 
-    try:
-        cursor = connection.cursor(dictionary=True)
-
-        # Fetch total print jobs
-        cursor.execute("SELECT COUNT(*) as total_jobs FROM print_jobs")
-        total_jobs = cursor.fetchone()['total_jobs']
-
-        # Fetch remaining paper and last refilled time
-        cursor.execute("""
-            SELECT remaining_paper, updated_at 
-            FROM printer_status 
-            ORDER BY updated_at DESC 
-            LIMIT 1
-        """)
-        printer_status = cursor.fetchone()
-
-        # Handle case where no record exists in printer_status
-        if printer_status:
-            remaining_paper = printer_status['remaining_paper']
-            last_refilled = printer_status['updated_at'].strftime('%B %d, %Y')
-        else:
-            remaining_paper = 0
-            last_refilled = 'N/A'
-
-        # Fetch today's completed jobs
-        cursor.execute("""
-            SELECT COUNT(*) as todays_completed_jobs 
-            FROM print_job_details 
-            WHERE status='complete' AND DATE(created_at) = CURDATE()
-        """)
-        todays_completed_jobs = cursor.fetchone()['todays_completed_jobs']
-
-        # Fetch today's total sales (only for completed jobs)
-        cursor.execute("""
-            SELECT SUM(pjd.total_price) as todays_total_sales 
-            FROM print_job_details pjd
-            JOIN print_jobs pj ON pj.job_id = pjd.job_id
-            WHERE pjd.status = 'complete' AND DATE(pj.created_at) = CURDATE()
-        """)
-        todays_total_sales = cursor.fetchone()['todays_total_sales'] or 0.0
-
-        # Calculate total jobs for today
-        cursor.execute("SELECT COUNT(*) as todays_jobs_count FROM print_jobs WHERE DATE(created_at) = CURDATE()")
-        todays_jobs_count = cursor.fetchone()['todays_jobs_count']
-
-        # Calculate pagination details
-        todays_total_pages = (todays_jobs_count + jobs_per_page - 1) // jobs_per_page
-        offset = (todays_page - 1) * jobs_per_page
-
-        # Fetch today's print jobs with pagination
-        cursor.execute(f"""
-            SELECT pjd.job_id, pjd.file_name, pjd.pages_to_print, pjd.color_mode, 
-                   pjd.total_price, pjd.inserted_amount, pjd.status 
-            FROM print_jobs pj
-            JOIN print_job_details pjd ON pj.job_id = pjd.job_id
-            WHERE DATE(pj.created_at) = CURDATE()
-            ORDER BY pj.created_at DESC
-            LIMIT {jobs_per_page} OFFSET {offset}
-        """)
-        todays_jobs = cursor.fetchall()
-
-        # Fetch printing prices
-        cursor.execute("SELECT black_price, color_price FROM print_prices ORDER BY updated_at DESC LIMIT 1")
-        prices = cursor.fetchone()
-        if not prices:
-            black_price, color_price = 3, 5  # Default prices
-        else:
-            black_price = prices['black_price']
-            color_price = prices['color_price']
-
-        # Render the dashboard template with all data
-        return render_template(
-            'dashboard.html',
-            admin_username=admin_username,
-            total_jobs=total_jobs,
-            remaining_paper=remaining_paper,
-            last_refilled=last_refilled,
-            todays_completed_jobs=todays_completed_jobs,
-            todays_total_sales=todays_total_sales,
-            todays_jobs=todays_jobs,
-            todays_page=todays_page,
-            todays_total_pages=todays_total_pages,
-            black_price=black_price,
-            color_price=color_price
-        )
-    except mysql.connector.Error as err:
-        return f"Error: {err}"
-
-
-
+    file = request.files['file']
     
-@app.route('/update_prices', methods=['POST'])
-def update_prices():
-    if 'admin_id' not in session:
-        flash('Please log in to update prices.', 'warning')
-        return redirect(url_for('login'))
+    if file and allowed_file(file.filename):
+        filename = file.filename
+        file_path = os.path.join('uploads', filename)
+        file.save(file_path)
 
-    black_price = request.form.get('black_price', type=float)
-    color_price = request.form.get('color_price', type=float)
+        file_size = os.path.getsize(file_path)
+        total_pages = get_total_pages(file_path)
 
-    try:
-        cursor = connection.cursor()
-        cursor.execute("""
-            INSERT INTO print_prices (black_price, color_price) 
-            VALUES (%s, %s)
-        """, (black_price, color_price))
-        connection.commit()
-        flash('Prices updated successfully.', 'success')
-    except mysql.connector.Error as err:
-        flash(f"Error updating prices: {err}", 'danger')
-    return redirect(url_for('dashboard'))
+        if total_pages is None:
+            os.remove(file_path)
+            return "Error processing the file.", 500
 
-@app.route('/jobs')
-def jobs():
-    try:
-        cursor = connection.cursor(dictionary=True)
+        try:
+            db_connection, db_cursor = get_db_connection()
 
-        # Get the month filter from query parameters
-        selected_month = request.args.get('month')
-        filter_clause = ""
-        filter_params = []
+            # Insert file info into the database with status 'pending'
+            query = """
+                INSERT INTO print_jobs (document_name, document_size, file_data, status, total_pages)
+                VALUES (%s, %s, %s, %s, %s)
+            """
+            with open(file_path, 'rb') as f:
+                file_data = f.read()
+            db_cursor.execute(query, (filename, file_size, file_data, 'pending', total_pages))
+            db_connection.commit()
 
-        if selected_month:
-            filter_clause = "WHERE DATE_FORMAT(pj.created_at, '%Y-%m') = %s"
-            filter_params.append(selected_month)
-
-        # Fetch total jobs (regardless of status)
-        cursor.execute(f"""
-            SELECT COUNT(*) as total_jobs 
-            FROM print_job_details pjd
-            {filter_clause}
-        """, filter_params)
-        total_jobs = cursor.fetchone()['total_jobs']
-
-        # Fetch total sales (only for completed jobs in pjd)
-        cursor.execute(f"""
-            SELECT SUM(COALESCE(pjd.total_price, 0)) as total_sales 
-            FROM print_job_details pjd
-            JOIN print_jobs pj ON pj.job_id = pjd.job_id
-            {filter_clause} AND pjd.status = 'complete'
-        """, filter_params)
-        total_sales = cursor.fetchone()['total_sales'] or 0.0
-
-        # Fetch completed and pending jobs
-        cursor.execute(f"""
-            SELECT 
-                SUM(CASE WHEN pjd.status = 'complete' THEN 1 ELSE 0 END) as completed_jobs,
-                SUM(CASE WHEN pjd.status = 'cancelled' THEN 1 ELSE 0 END) as cancelled_jobs
-            FROM print_jobs pj
-            JOIN print_job_details pjd ON pj.job_id = pjd.job_id
-            {filter_clause}
-        """, filter_params)
-
-        job_status_counts = cursor.fetchone()
-        completed_jobs = job_status_counts['completed_jobs']
-        cancelled_jobs = job_status_counts['cancelled_jobs']
+           # Notify the kiosk in real-time about the status
+            socketio.emit('file_uploaded', {
+                'file_name': filename,
+                'file_path': file_path,
+                'total_pages': total_pages,
+                'job_id': db_cursor.lastrowid  # Send the job_id to the client
+            })
 
 
-        # Fetch revenue breakdown (Color vs. Black & White)
-        cursor.execute(f"""
-            SELECT 
-                SUM(CASE WHEN pjd.color_mode = 'colored' THEN pjd.total_price ELSE 0 END) as color_revenue,
-                SUM(CASE WHEN pjd.color_mode = 'bw' THEN pjd.total_price ELSE 0 END) as bw_revenue
-            FROM print_job_details pjd
-            JOIN print_jobs pj ON pj.job_id = pjd.job_id
-            {filter_clause} AND pjd.status = 'complete'
-        """, filter_params)
-        revenue_breakdown = cursor.fetchone()
-        color_revenue = revenue_breakdown['color_revenue'] or 0.0
-        bw_revenue = revenue_breakdown['bw_revenue'] or 0.0
-
-        # Calculate percentages
-        total_revenue = color_revenue + bw_revenue
-        color_percentage = (color_revenue / total_revenue * 100) if total_revenue > 0 else 0
-        bw_percentage = (bw_revenue / total_revenue * 100) if total_revenue > 0 else 0
-                
+            return render_template('uploaded_file.html', filename=filename, file_size=file_size, total_pages=total_pages)
         
-        # Fetch jobs for the table with pagination
-        rows_per_page = 10
-        page = int(request.args.get('page', 1))
-        offset = (page - 1) * rows_per_page
+        except mysql.connector.Error as err:
+            print(f"Database Error: {err}")
+            socketio.emit('file_status_update', {'document_name': filename, 'status': 'failed'})
+            return f"Database Error: {err}", 500
 
-        cursor.execute(f"""
-            SELECT COUNT(*) as total_jobs 
-            FROM print_jobs pj
-            {filter_clause}
-        """, filter_params)
-        total_records = cursor.fetchone()['total_jobs']
-        total_pages = ceil(total_records / rows_per_page)
+        except Exception as e:
+            print(f"Error: {e}")
+            socketio.emit('file_status_update', {'document_name': filename, 'status': 'failed'})
+            return f"Error processing file: {e}", 500
+        
+        finally:
+            os.remove(file_path)
 
-        query_with_pagination = f"""
-            SELECT pjd.id, pj.job_id, pjd.file_name, pjd.status, pj.created_at, 
-                   pjd.pages_to_print, pjd.color_mode, pjd.total_price, 
-                   pjd.inserted_amount, pjd.total_pages
-            FROM print_jobs pj
-            JOIN print_job_details pjd ON pj.job_id = pjd.job_id
-            {filter_clause}
-            ORDER BY pj.created_at DESC
-            LIMIT %s OFFSET %s
-        """
-        cursor.execute(query_with_pagination, filter_params + [rows_per_page, offset])
-        print_jobs = cursor.fetchall()
+    return "Invalid file type. Please upload a .doc, .docx, or .pdf file."
 
-        # Fetch job trends (number of jobs by date)
-        cursor.execute(f"""
-            SELECT 
-                DATE(pj.created_at) as job_date, 
-                COUNT(*) as job_count 
-            FROM print_jobs pj
-            {filter_clause}
-            GROUP BY DATE(pj.created_at)
-            ORDER BY job_date
-        """, filter_params)
-        job_trends = cursor.fetchall()
-        job_trend_dates = [trend['job_date'].strftime('%Y-%m-%d') for trend in job_trends]
-        job_trend_counts = [trend['job_count'] for trend in job_trends]
+# 📡 **Route: Generate Wi-Fi QR Code**
+@app.route('/generate_wifi_qr')
+def generate_wifi_qr():
+    ssid = "YourSSID"
+    password = "YourPassword"
 
-        # Pagination range logic
-        pagination_range = 5
-        start_page = max(1, page - pagination_range // 2)
-        end_page = min(total_pages, start_page + pagination_range - 1)
-        if end_page - start_page < pagination_range:
-            start_page = max(1, end_page - pagination_range + 1)
+    wifi_config = f"WIFI:S:{ssid};T:WPA;P:{password};;"
+    qr = qrcode.QRCode()
+    qr.add_data(wifi_config)
+    qr.make(fit=True)
 
-        return render_template(
-        'jobs.html',
-        total_jobs=total_jobs,
-        total_sales=total_sales,
-        completed_jobs=completed_jobs,
-        cancelled_jobs=cancelled_jobs,
-        color_revenue=color_revenue,
-        bw_revenue=bw_revenue,
-        color_percentage=color_percentage,
-        bw_percentage=bw_percentage,
-        print_jobs=print_jobs,
-        page=page,
-        total_pages=total_pages,
-        start_page=start_page,
-        end_page=end_page,
-        selected_month=selected_month,
-        job_trend_dates=job_trend_dates,
-        job_trend_counts=job_trend_counts
-    )
+    img = qr.make_image(fill="black", back_color="white")
+    qr_code_path = os.path.join('static', 'wifi_qr_code.png')
+    img.save(qr_code_path)
+    
+    return render_template('wifi_qr.html', qr_code_path=qr_code_path)
 
-    except mysql.connector.Error as err:
-        return f"Error: {err}"
+# 🛠️ **Teardown: Close DB Connection**
+@app.teardown_appcontext
+def close_db_connection(exception):
+    if hasattr(app, 'db_connection') and app.db_connection.is_connected():
+        app.db_cursor.close()
+        app.db_connection.close()
 
+# 🔄 **SocketIO Event: Update File Status**
+@socketio.on('update_status')
+def update_status(data):
+    document_name = data['document_name']
+    status = data['status']
 
+    db_connection, db_cursor = get_db_connection()
+    
+    query = """
+        UPDATE print_jobs SET status = %s WHERE document_name = %s
+    """
+    db_cursor.execute(query, (status, document_name))
+    db_connection.commit()
 
+    socketio.emit('status_update', {'document_name': document_name, 'status': status})
 
-@app.route('/update_remaining_paper', methods=['POST'])
-def update_remaining_paper():
-    try:
-        # Get the new paper count from the form
-        new_remaining_paper = int(request.form['new_remaining_paper'])
-
-        # Update the database
-        cursor = connection.cursor(dictionary=True)  # Use dictionary cursor
-        cursor.execute("""
-            INSERT INTO printer_status (remaining_paper, updated_at) 
-            VALUES (%s, NOW())
-        """, (new_remaining_paper,))
-        connection.commit()
-
-        cursor.execute("""
-            SELECT updated_at 
-            FROM printer_status 
-            WHERE refill = TRUE 
-            ORDER BY updated_at DESC 
-            LIMIT 1
-        """)
-
-        last_refilled_row = cursor.fetchone()
-        if last_refilled_row:
-            last_refilled = last_refilled_row['updated_at'].strftime('%B %d, %Y')
-        else:
-            last_refilled = 'N/A'
-
-        # Pass the last_refilled value to the dashboard
-        flash(f"Paper count updated successfully. Last refilled: {last_refilled}", 'success')
-        return redirect(url_for('dashboard'))
-    except mysql.connector.Error as err:
-        return f"Error: {err}"
-
-
-@app.before_request
-def require_login():
-    allowed_routes = ['login', 'signup', 'logout', 'static']
-    if request.endpoint not in allowed_routes and 'admin_id' not in session:
-        flash('You must log in to access this page.', 'danger')
-        return redirect(url_for('login'))
-
-
+# **Run Flask Server**
 if __name__ == '__main__':
-    app.run(debug=True, host='127.0.0.1', port=5000)
+    socketio.run(app, host='0.0.0.0', port=5000, allow_unsafe_werkzeug=True)
