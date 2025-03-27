@@ -1,0 +1,115 @@
+/* General Styles */
+body {
+    font-family: Arial, sans-serif;
+    margin: 0;
+    padding: 0;
+    background-color: #f4f4f9;
+    color: #333;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+}
+
+.container {
+    display: flex;
+    flex-direction: column;
+    background: #fff;
+    padding: 20px 40px;
+    border-radius: 8px;
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.2);
+    width: 100%;
+    max-width: 900px;
+}
+
+/* Header Section Styles */
+.header-section {
+    text-align: center;
+    margin-bottom: 20px;
+}
+
+.header-section h1 {
+    font-size: 1.8rem;
+    color: black;
+    margin: 0;
+}
+
+/* Content Section Layout */
+.content {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+}
+
+/* Logo Section Styles */
+.logo-section {
+    flex: 1;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    width: 100%; /* Ensure it matches the form's width */
+    text-align: center;
+}
+
+.logo-section img {
+    max-width: 80%; /* Restrict image to fit within its container */
+    height: auto;
+    object-fit: contain;
+}
+
+/* Form Section Styles */
+.form-section {
+    flex: 1; /* Equal width as the logo section */
+    padding-left: 20px;
+    width: 100%; /* Matches logo width */
+}
+
+h2 {
+    margin-bottom: 20px;
+    color: #ff294f;
+}
+
+form {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+}
+
+label {
+    font-size: 1rem;
+    text-align: left;
+    margin-bottom: 5px;
+}
+
+input {
+    padding: 10px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    font-size: 1rem;
+    width: 100%;
+}
+
+button {
+    padding: 10px;
+    background-color: #ff294f;
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    font-size: 1rem;
+    cursor: pointer;
+    transition: background-color 0.3s ease;
+}
+
+button:hover {
+    background-color: red;
+}
+
+a {
+    color: #ff294f;
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}

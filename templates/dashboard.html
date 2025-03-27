@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Dashboard</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+    <div class="sidebar">
+        <img src="{{ url_for('static', filename='logo.jpg') }}" alt="Logo" class="logo">
+        <a href="{{ url_for('dashboard') }}">Dashboard</a>
+        <a href="{{ url_for('jobs') }}">Print Jobs</a>
+
+          <!-- Logout button -->
+          <div class="logout-section">
+            <a href="{{ url_for('logout') }}" class="logout-btn">Log Out</a>
+        </div>
+    </div>
+
+    <div class="main-content">
+
+        <div class="welcome-message">
+            <h1>Welcome, {{ admin_username }}</h1>
+        </div>
+        <!-- Metrics Section -->
+        <div class="dashboard-metrics">
+            <div class="metric-card">
+                <h3>Today's Completed Jobs</h3>
+                <p>{{ todays_completed_jobs }}</p>
+            </div>
+            <div class="metric-card">
+                <h3>Total Sales (Today)</h3>
+                <p>PHP {{ todays_total_sales }}</p>
+            </div>
+            <div class="metric-card">
+                <h3>Remaining Paper</h3>
+                <p id="remaining-paper">{{ remaining_paper }}</p>
+                {% if remaining_paper <= 10 %}
+                <p style="color: red;font-size:10px;">Low paper warning: Please refill!</p>
+                {% endif %}
+                <p style="font-size:10px;">Last Refilled: <span id="last-refilled">{{ last_refilled }}</span></p>
+                <form id="update-paper-form" method="POST" action="/update_remaining_paper">
+                    <input type="number" name="new_remaining_paper" min="0" required placeholder="Enter new paper count">
+                    <button type="submit">Update</button>
+                </form>
+            </div>
+        </div>
+        <div class="price-management">
+            <h2>Manage Print Prices</h2>
+            <form method="POST" action="{{ url_for('update_prices') }}">
+                <div>
+                    <label for="black_price">Black & White Price (PHP):</label>
+                    <input type="number" id="black_price" name="black_price" value="{{ black_price }}" step="0.01" min="0" required>
+                </div>
+                <div>
+                    <label for="color_price">Color Price (PHP):</label>
+                    <input type="number" id="color_price" name="color_price" value="{{ color_price }}" step="0.01" min="0" required>
+                </div>
+                <button type="submit">Update Prices</button>
+            </form>
+        </div>
+        
+        <h2>Today's Print Jobs</h2>
+        {% if todays_jobs %}
+        <table>
+            <thead>
+                <tr>
+                    <th>Job ID</th>
+                    <th>File Name</th>
+                    <th>Pages to Print</th>
+                    <th>Color Mode</th>
+                    <th>Total Price</th>
+                    <th>Inserted Amount</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for job in todays_jobs %}
+                <tr>
+                    <td>{{ job.job_id }}</td>
+                    <td>{{ job.file_name }}</td>
+                    <td>{{ job.pages_to_print }}</td>
+                    <td>{{ job.color_mode }}</td>
+                    <td>PHP {{ "%.2f"|format(job.total_price) }}</td>
+                    <td>PHP {{ "%.2f"|format(job.inserted_amount) }}</td>
+                    <td>
+                        {% if job.status == 'complete' %}
+                        <span class="status-complete">{{ job.status }}</span>
+                        {% elif job.status == 'pending' %}
+                        <span class="status-pending">{{ job.status }}</span>
+                        {% else %}
+                        <span class="status-other">{{ job.status }}</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p>No print jobs today.</p>
+        {% endif %}
+        
+    </div>
+</body>
+<script>
+    function updateRemainingPaper() {
+        fetch('/api/get_remaining_paper')
+            .then(response => response.json())
+            .then(data => {
+                if (data.remaining_paper !== undefined) {
+                    document.getElementById('remaining-paper').innerText = data.remaining_paper;
+                } else {
+                    console.error('Error fetching remaining paper:', data.error);
+                }
+            })
+            .catch(error => console.error('Error:', error));
+    }
+</script>
+</html>
